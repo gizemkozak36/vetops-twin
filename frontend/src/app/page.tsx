@@ -1,498 +1,113 @@
 "use client";
-
 import React, { useCallback, useEffect, useState } from "react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API = "http://127.0.0.1:8000";
+type Urg = "Dusuk" | "Orta" | "Acil";
+interface Pat { patient_name: string; species: string; urgency: Urg; complaint: string; position?: number; }
+interface Room { room_id: string; status: "Bos" | "Dolu"; current_patient: Pat | null; }
+interface Stk { item_id: string; name: string; quantity: number; critical_threshold: number; }
+interface CState { rooms: Room[]; queue: Pat[]; inventory: Stk[]; alerts: string[]; }
 
-interface Patient {
-  patient_name: string;
-  species: string;
-  urgency: "Dusuk" | "Orta" | "Acil";
-  complaint: string;
-  position?: number;
-}
+export default function Page() {
+  const [d, setD] = useState<CState | null>(null);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+  const [name, setName] = useState("");
+  const [sp, setSp] = useState("Kedi");
+  const [urg, setUrg] = useState<Urg>("Acil");
+  const [comp, setComp] = useState("");
+  const [rid, setRid] = useState("OD-1");
+  const [iid, setIid] = useState("STK-1");
+  const [qty, setQty] = useState(1);
 
-interface Room {
-  room_id: string;
-  status: "Bos" | "Dolu";
-  current_patient: Patient | null;
-}
-
-interface StockItem {
-  item_id: string;
-  name: string;
-  quantity: number;
-  critical_threshold: number;
-}
-
-interface ClinicState {
-  rooms: Room[];
-  queue: Patient[];
-  inventory: StockItem[];
-  alerts: string[];
-}
-
-export default function ClinicDashboardPage() {
-  const [state, setState] = useState<ClinicState | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  const [patientName, setPatientName] = useState("");
-  const [species, setSpecies] = useState("Kedi");
-  const [urgency, setUrgency] = useState<"Dusuk" | "Orta" | "Acil">("Orta");
-  const [complaint, setComplaint] = useState("");
-  const [submittingTriage, setSubmittingTriage] = useState(false);
-
-  const [selectedRoomId, setSelectedRoomId] = useState("OD-1");
-  const [selectedItemId, setSelectedItemId] = useState("STK-1");
-  const [usedQuantity, setUsedQuantity] = useState(1);
-  const [completingTreatment, setCompletingTreatment] = useState(false);
-
-  const fetchState = useCallback(async () => {
+  const load = useCallback(async () => {
     try {
-      setError(null);
-      const res = await fetch(`${API_BASE}/state`, { cache: "no-store" });
-      if (!res.ok) {
-        throw new Error(`Durum alınamadı (HTTP ${res.status})`);
-      }
-      const data: ClinicState = await res.json();
-      setState(data);
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Backend durumuna bağlanılamadı."
-      );
-    } finally {
-      setLoading(false);
-    }
+      setErr("");
+      let r = await fetch(`${API}/clinic-state`, { cache: "no-store" });
+      if (r.status === 404) r = await fetch(`${API}/state`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setD(await r.json());
+    } catch (e) { setErr(e instanceof Error ? e.message : "Bağlantı hatası"); }
   }, []);
 
-  useEffect(() => {
-    fetchState();
-  }, [fetchState]);
+  useEffect(() => { load(); }, [load]);
 
-  const handleTriageSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!patientName.trim() || !complaint.trim()) return;
+  async function onTriage(e: React.FormEvent) {
+    e.preventDefault(); setErr(""); setMsg("");
+    const r = await fetch(`${API}/triage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ patient_name: name, species: sp, urgency: urg, complaint: comp }) });
+    const j = await r.json();
+    if (!r.ok) return setErr(j.detail || "Triyaj hatası");
+    setD(j.state); setName(""); setComp(""); setMsg("Triyaj kaydı oluşturuldu.");
+  }
 
-    try {
-      setSubmittingTriage(true);
-      setError(null);
-      setNotice(null);
+  async function onComp(e: React.FormEvent) {
+    e.preventDefault(); setErr(""); setMsg("");
+    const used_items = qty > 0 ? [{ item_id: iid, quantity: Number(qty) }] : [];
+    const r = await fetch(`${API}/treatment/complete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ room_id: rid, used_items }) });
+    const j = await r.json();
+    if (!r.ok) return setErr(j.detail || "Tedavi hatası");
+    setD(j.state); setMsg("Tedavi tamamlandı ve stok güncellendi.");
+  }
 
-      const res = await fetch(`${API_BASE}/triage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          patient_name: patientName.trim(),
-          species: species.trim() || "Kedi",
-          urgency,
-          complaint: complaint.trim(),
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || "Triyaj kaydı başarısız oldu");
-      }
-
-      setState(data.state);
-      setPatientName("");
-      setComplaint("");
-      setNotice(
-        data.assignment === "room"
-          ? `${data.patient.patient_name} doğrudan ${data.room_id} odasına alındı.`
-          : `${data.patient.patient_name} kuyruğa eklendi (Sıra: #${data.position}).`
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Triyaj hatası oluştu");
-    } finally {
-      setSubmittingTriage(false);
-    }
-  };
-
-  const handleCompleteTreatment = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    try {
-      setCompletingTreatment(true);
-      setError(null);
-      setNotice(null);
-
-      const used_items =
-        usedQuantity > 0 && selectedItemId
-          ? [{ item_id: selectedItemId, quantity: Number(usedQuantity) }]
-          : [];
-
-      const res = await fetch(`${API_BASE}/treatment/complete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          room_id: selectedRoomId,
-          used_items,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || "Tedavi tamamlanamadı");
-      }
-
-      setState(data.state);
-      setNotice(
-        `${data.completed_room} odasındaki tedavi tamamlandı ve stok güncellendi.`
-      );
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Tedavi tamamlama hatası"
-      );
-    } finally {
-      setCompletingTreatment(false);
-    }
-  };
-
-  const urgencyBadge = (level: Patient["urgency"]) => {
-    if (level === "Acil") {
-      return "bg-red-100 text-red-800 border-red-200";
-    }
-    if (level === "Orta") {
-      return "bg-amber-100 text-amber-800 border-amber-200";
-    }
-    return "bg-emerald-100 text-emerald-800 border-emerald-200";
-  };
+  const bdg = (u: Urg) => u === "Acil" ? "bg-rose-500/20 text-rose-300 border-rose-400/40" : u === "Orta" ? "bg-amber-500/20 text-amber-300 border-amber-400/40" : "bg-sky-500/20 text-sky-300 border-sky-400/40";
 
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900 p-6">
-      <div className="max-w-6xl mx-auto space-y-6">
-        <header className="flex flex-wrap items-center justify-between gap-4 bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">
-              VetOps Twin — Klinik Operasyon Paneli
-            </h1>
-            <p className="text-sm text-slate-500 mt-1">
-              Oda durumu, öncelikli triyaj kuyruğu, tedavi tamamlama ve stok takibi
-            </p>
+    <div className="min-h-screen w-full bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 text-slate-100 p-6 space-y-6">
+      <header className="flex items-center justify-between border-b border-white/10 pb-4">
+        <div>
+          <h1 className="text-2xl font-extrabold bg-gradient-to-r from-cyan-300 via-emerald-300 to-indigo-300 bg-clip-text text-transparent">VetOps Twin — Klinik Operasyon Merkezi</h1>
+          <p className="text-xs text-slate-400">Odalar, öncelikli triyaj kuyruğu, tedavi tamamlama ve stok takibi</p>
+        </div>
+        <button onClick={load} className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 text-white text-sm font-bold cursor-pointer">Durumu Yenile</button>
+      </header>
+      {err && <div className="p-3 rounded-xl bg-rose-950/80 border border-rose-400/40 text-rose-200 text-sm">Hata: {err}</div>}
+      {msg && <div className="p-3 rounded-xl bg-emerald-950/80 border border-emerald-400/40 text-emerald-200 text-sm">{msg}</div>}
+      {d && d.alerts.length > 0 && <div className="p-3 rounded-xl bg-amber-950/70 border border-amber-400/40 text-amber-200 text-sm">{d.alerts.join(" | ")}</div>}
+      {d && (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {d.rooms.map((r) => (
+              <div key={r.room_id} className="rounded-2xl bg-slate-900/90 border border-white/10 p-4 space-y-2">
+                <div className="flex justify-between font-bold"><span className="text-cyan-300">{r.room_id}</span><span className={r.status === "Dolu" ? "text-rose-300" : "text-emerald-300"}>{r.status}</span></div>
+                <p className="text-sm text-slate-300">{r.current_patient ? `${r.current_patient.patient_name} (${r.current_patient.species}) - ${r.current_patient.urgency} - ${r.current_patient.complaint}` : "Oda boş"}</p>
+              </div>
+            ))}
           </div>
-          <button
-            type="button"
-            onClick={fetchState}
-            className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 transition cursor-pointer"
-          >
-            Durumu Yenile
-          </button>
-        </header>
-
-        {error && (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-            <strong>Hata:</strong> {error}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <form onSubmit={onTriage} className="rounded-2xl bg-slate-900/90 border border-white/10 p-5 space-y-3">
+              <h2 className="font-bold text-sky-300">Yeni Triyaj</h2>
+              <div className="grid grid-cols-2 gap-3">
+                <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="Hasta Adı" className="rounded-xl bg-slate-950 border border-white/15 px-3 py-2 text-sm text-white" />
+                <input required value={sp} onChange={(e) => setSp(e.target.value)} placeholder="Tür" className="rounded-xl bg-slate-950 border border-white/15 px-3 py-2 text-sm text-white" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <select value={urg} onChange={(e) => setUrg(e.target.value as Urg)} className="rounded-xl bg-slate-950 border border-white/15 px-3 py-2 text-sm text-white"><option value="Acil">Acil</option><option value="Orta">Orta</option><option value="Dusuk">Dusuk</option></select>
+                <input required value={comp} onChange={(e) => setComp(e.target.value)} placeholder="Şikayet" className="rounded-xl bg-slate-950 border border-white/15 px-3 py-2 text-sm text-white" />
+              </div>
+              <button type="submit" className="w-full py-2 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 text-white text-sm font-bold cursor-pointer">Kaydet</button>
+            </form>
+            <form onSubmit={onComp} className="rounded-2xl bg-slate-900/90 border border-white/10 p-5 space-y-3">
+              <h2 className="font-bold text-emerald-300">Tedavi Tamamla</h2>
+              <div className="grid grid-cols-3 gap-3">
+                <select value={rid} onChange={(e) => setRid(e.target.value)} className="rounded-xl bg-slate-950 border border-white/15 px-3 py-2 text-sm text-white">{d.rooms.map((r) => <option key={r.room_id} value={r.room_id}>{r.room_id}</option>)}</select>
+                <select value={iid} onChange={(e) => setIid(e.target.value)} className="rounded-xl bg-slate-950 border border-white/15 px-3 py-2 text-sm text-white">{d.inventory.map((it) => <option key={it.item_id} value={it.item_id}>{it.item_id} - {it.name}</option>)}</select>
+                <input type="number" min={1} required value={qty} onChange={(e) => setQty(Number(e.target.value))} className="rounded-xl bg-slate-950 border border-white/15 px-3 py-2 text-sm text-white" />
+              </div>
+              <button type="submit" className="w-full py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white text-sm font-bold cursor-pointer">Tamamla</button>
+            </form>
           </div>
-        )}
-        {notice && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-            {notice}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="rounded-2xl bg-slate-900/90 border border-white/10 p-5 space-y-2">
+              <h2 className="font-bold text-amber-300">Bekleme Kuyruğu ({d.queue.length})</h2>
+              {d.queue.map((p, i) => <div key={i} className="flex justify-between items-center border-t border-white/10 pt-2 text-sm"><span><strong className="text-cyan-300">#{p.position ?? i + 1}</strong> {p.patient_name} ({p.species}) - {p.complaint}</span><span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${bdg(p.urgency)}`}>{p.urgency}</span></div>)}
+            </div>
+            <div className="rounded-2xl bg-slate-900/90 border border-white/10 p-5 space-y-2">
+              <h2 className="font-bold text-fuchsia-300">Stok Envanteri</h2>
+              {d.inventory.map((it) => <div key={it.item_id} className="flex justify-between border-t border-white/10 pt-2 text-sm"><span><strong className="text-cyan-300">{it.item_id}</strong> - {it.name}</span><span><strong className={it.quantity <= it.critical_threshold ? "text-rose-300" : "text-emerald-300"}>{it.quantity}</strong> <span className="text-amber-300">/ eşik {it.critical_threshold}</span></span></div>)}
+            </div>
           </div>
-        )}
-        {state && state.alerts.length > 0 && (
-          <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 space-y-1.5">
-            <h2 className="text-sm font-semibold text-amber-900">
-              Kritik Stok Uyarıları ({state.alerts.length})
-            </h2>
-            <ul className="list-disc list-inside text-sm text-amber-800 space-y-0.5">
-              {state.alerts.map((alertText, index) => (
-                <li key={index}>{alertText}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {loading ? (
-          <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-slate-500">
-            Klinik verileri yükleniyor...
-          </div>
-        ) : (
-          state && (
-            <>
-              <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {state.rooms.map((room) => {
-                  const isOccupied = room.status === "Dolu";
-                  return (
-                    <div
-                      key={room.room_id}
-                      className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-3"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-lg font-bold">{room.room_id}</span>
-                        <span
-                          className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${
-                            isOccupied
-                              ? "bg-rose-100 text-rose-800 border-rose-200"
-                              : "bg-emerald-100 text-emerald-800 border-emerald-200"
-                          }`}
-                        >
-                          {room.status}
-                        </span>
-                      </div>
-
-                      {room.current_patient ? (
-                        <div className="rounded-lg bg-slate-50 border border-slate-200 p-3.5 space-y-1.5">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-semibold text-slate-900">
-                              {room.current_patient.patient_name} (
-                              {room.current_patient.species})
-                            </span>
-                            <span
-                              className={`text-xs font-medium px-2 py-0.5 rounded border ${urgencyBadge(
-                                room.current_patient.urgency
-                              )}`}
-                            >
-                              {room.current_patient.urgency}
-                            </span>
-                          </div>
-                          <p className="text-sm text-slate-600">
-                            Şikayet: {room.current_patient.complaint}
-                          </p>
-                        </div>
-                      ) : (
-                        <p className="text-sm text-slate-400 py-3">
-                          Odada şu anda aktif hasta bulunmuyor.
-                        </p>
-                      )}
-                    </div>
-                  );
-                })}
-              </section>
-
-              <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <form
-                  onSubmit={handleTriageSubmit}
-                  className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4"
-                >
-                  <h2 className="text-lg font-semibold">Yeni Triyaj Kaydı</h2>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium text-slate-600 mb-1">
-                        Hasta Adı
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={patientName}
-                        onChange={(e) => setPatientName(e.target.value)}
-                        placeholder="Örn: Zeytin"
-                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-600 mb-1">
-                        Tür
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={species}
-                        onChange={(e) => setSpecies(e.target.value)}
-                        placeholder="Kedi / Köpek"
-                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium text-slate-600 mb-1">
-                        Aciliyet Seviyesi
-                      </label>
-                      <select
-                        value={urgency}
-                        onChange={(e) =>
-                          setUrgency(e.target.value as "Dusuk" | "Orta" | "Acil")
-                        }
-                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
-                      >
-                        <option value="Acil">Acil</option>
-                        <option value="Orta">Orta</option>
-                        <option value="Dusuk">Dusuk</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-600 mb-1">
-                        Şikayet
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={complaint}
-                        onChange={(e) => setComplaint(e.target.value)}
-                        placeholder="Örn: Travma, Kusma"
-                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={submittingTriage}
-                    className="w-full rounded-lg bg-blue-600 text-white py-2.5 text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition cursor-pointer"
-                  >
-                    {submittingTriage ? "Kaydediliyor..." : "Triyaj Kaydı Oluştur"}
-                  </button>
-                </form>
-
-                <form
-                  onSubmit={handleCompleteTreatment}
-                  className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4"
-                >
-                  <h2 className="text-lg font-semibold">
-                    Tedavi Tamamla ve Stok Düş
-                  </h2>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium text-slate-600 mb-1">
-                        Oda
-                      </label>
-                      <select
-                        value={selectedRoomId}
-                        onChange={(e) => setSelectedRoomId(e.target.value)}
-                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
-                      >
-                        {state.rooms.map((r) => (
-                          <option key={r.room_id} value={r.room_id}>
-                            {r.room_id} ({r.status})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-medium text-slate-600 mb-1">
-                        Kullanılan Stok Kalemi
-                      </label>
-                      <select
-                        value={selectedItemId}
-                        onChange={(e) => setSelectedItemId(e.target.value)}
-                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
-                      >
-                        {state.inventory.map((item) => (
-                          <option key={item.item_id} value={item.item_id}>
-                            {item.item_id} — {item.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-medium text-slate-600 mb-1">
-                        Miktar
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        required
-                        value={usedQuantity}
-                        onChange={(e) => setUsedQuantity(Number(e.target.value))}
-                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={completingTreatment}
-                    className="w-full rounded-lg bg-emerald-600 text-white py-2.5 text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 transition cursor-pointer"
-                  >
-                    {completingTreatment
-                      ? "Tamamlanıyor..."
-                      : "Tedaviyi Tamamla"}
-                  </button>
-                </form>
-              </section>
-
-              <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-3">
-                  <h2 className="text-lg font-semibold">
-                    Bekleme Kuyruğu ({state.queue.length})
-                  </h2>
-                  {state.queue.length === 0 ? (
-                    <p className="text-sm text-slate-400 py-2">
-                      Bekleyen hasta yok.
-                    </p>
-                  ) : (
-                    <div className="divide-y divide-slate-100">
-                      {state.queue.map((item, idx) => (
-                        <div
-                          key={`${item.patient_name}-${idx}`}
-                          className="py-3 flex items-center justify-between gap-3"
-                        >
-                          <div>
-                            <span className="font-semibold text-sm">
-                              #{item.position ?? idx + 1} {item.patient_name}
-                            </span>{" "}
-                            <span className="text-xs text-slate-500">
-                              ({item.species}) — {item.complaint}
-                            </span>
-                          </div>
-                          <span
-                            className={`text-xs font-medium px-2 py-0.5 rounded border ${urgencyBadge(
-                              item.urgency
-                            )}`}
-                          >
-                            {item.urgency}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-3">
-                  <h2 className="text-lg font-semibold">Stok Envanteri</h2>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm text-left">
-                      <thead>
-                        <tr className="border-b border-slate-200 text-xs text-slate-500">
-                          <th className="py-2 pr-3">Kod</th>
-                          <th className="py-2 pr-3">Malzeme</th>
-                          <th className="py-2 pr-3">Adet</th>
-                          <th className="py-2">Eşik</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {state.inventory.map((item) => {
-                          const isCritical =
-                            item.quantity <= item.critical_threshold;
-                          return (
-                            <tr
-                              key={item.item_id}
-                              className={isCritical ? "bg-amber-50/70" : ""}
-                            >
-                              <td className="py-2.5 pr-3 font-mono text-xs">
-                                {item.item_id}
-                              </td>
-                              <td className="py-2.5 pr-3 font-medium">
-                                {item.name}
-                              </td>
-                              <td className="py-2.5 pr-3 font-semibold">
-                                {item.quantity}
-                              </td>
-                              <td className="py-2.5 text-slate-500">
-                                {item.critical_threshold}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </section>
-            </>
-          )
-        )}
-      </div>
-    </main>
+        </>
+      )}
+    </div>
   );
 }
